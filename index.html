@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bounding Box Viewer</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            align-items: center;
+        }
+        input {
+            padding: 10px;
+            font-size: 16px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            width: 100px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        .canvas-container {
+            position: relative;
+            display: inline-block;
+            margin-top: 20px;
+        }
+        canvas {
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            max-width: 100%;
+            background: white;
+        }
+        .error {
+            color: red;
+            margin-top: 10px;
+        }
+        .info {
+            color: #666;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Bounding Box Viewer</h1>
+        
+        <div class="controls">
+            <label>Image Index:</label>
+            <input type="number" id="indexInput" value="0" min="0">
+            <button onclick="loadImage()">Load Image</button>
+            <select id="modeSelect">
+                <option value="view">View</option>
+                <option value="delete">Delete Bounding Boxes</option>
+                <option value="add">Add Bounding Boxes</option>
+                <option value="edit">Edit Bounding Boxes</option>
+            </select>
+        </div>
+        
+        <div id="error" class="error"></div>
+        <div id="info" class="info"></div>
+        
+        <div class="canvas-container">
+            <canvas id="canvas"></canvas>
+        </div>
+    </div>
+
+    <script>
+        const errorDiv = document.getElementById('error');
+        const infoDiv = document.getElementById('info');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        errorDiv.textContent = '';
+        infoDiv.textContent = 'Loading...';
+
+        let clicked = false;
+        let clickPos = null;
+        let mousePos = null;
+
+        // used for add mode
+        let nClicks = 0;
+        let beginAdd = null;
+
+        let data = {
+            index: 0,
+            img: null,
+            bbox: null,
+            labels: null,
+            label_names: null
+        };
+
+        canvas.addEventListener('mousemove', function(event) {
+            const rect = canvas.getBoundingClientRect();
+            mousePos = {
+                x: event.clientX - rect.left,
+                y: event.clientY - rect.top
+            };
+        });
+
+        canvas.addEventListener('mousedown', function(event) {
+            const rect = canvas.getBoundingClientRect();
+            clickPos = {
+                x: event.clientX - rect.left,
+                y: event.clientY - rect.top
+            };
+            console.log(`Clicked at: (${clickPos.x}, ${clickPos.y})`);
+            nClicks++;
+        });
+
+        canvas.addEventListener('mouseup', function(event) {
+            if (clickPos) {  
+                const rect = canvas.getBoundingClientRect();
+                const currentX = event.clientX - rect.left;
+                const currentY = event.clientY - rect.top;
+                console.log(`Mouse released at: (${currentX}, ${currentY})`);
+                console.log(`Rectangle: (${clickPos.x}, ${clickPos.y}) to (${currentX}, ${currentY})`);
+                clickPos = null;
+            }
+        });
+
+        // generated via Claude (thank you Claude!)
+        function promptLabel(message, defaultValue = '') {
+            return new Promise((resolve) => {
+                // Create modal elements
+                const overlay = document.createElement('div');
+                overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999';
+                
+                const modal = document.createElement('div');
+                modal.style.cssText = 'background:white;padding:20px;border-radius:8px;min-width:300px';
+                
+                const messageEl = document.createElement('p');
+                messageEl.textContent = message;
+                messageEl.style.marginBottom = '10px';
+                
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.value = defaultValue;
+                input.style.cssText = 'width:100%;padding:8px;margin-bottom:10px;box-sizing:border-box';
+                
+                const buttonContainer = document.createElement('div');
+                buttonContainer.style.cssText = 'display:flex;gap:10px;justify-content:flex-end';
+                
+                const okBtn = document.createElement('button');
+                okBtn.textContent = 'OK';
+                okBtn.style.padding = '8px 16px';
+                
+                const cancelBtn = document.createElement('button');
+                cancelBtn.textContent = 'Cancel';
+                cancelBtn.style.padding = '8px 16px';
+                
+                // Assemble modal
+                buttonContainer.appendChild(cancelBtn);
+                buttonContainer.appendChild(okBtn);
+                modal.appendChild(messageEl);
+                modal.appendChild(input);
+                modal.appendChild(buttonContainer);
+                overlay.appendChild(modal);
+                document.body.appendChild(overlay);
+                
+                input.focus();
+                input.select();
+                
+                // Handle events
+                const cleanup = (value) => {
+                    document.body.removeChild(overlay);
+                    resolve(value);
+                };
+                
+                okBtn.onclick = () => cleanup(input.value);
+                cancelBtn.onclick = () => cleanup(null);
+                input.onkeydown = (e) => {
+                    if (e.key === 'Enter') cleanup(input.value);
+                    if (e.key === 'Escape') cleanup(null);
+                };
+            });
+        }
+
+        async function render() {
+            let mode = document.getElementById('modeSelect').value;
+            infoDiv.textContent = `${data.bbox.length} bounding boxes`;
+
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Set canvas size based on image
+            if (data.img) {
+                canvas.width = data.img.width;
+                canvas.height = data.img.height;
+            }
+
+            // Draw image if available
+            if (data.img) {
+                ctx.drawImage(data.img, 0, 0);
+            }
+            
+            // Draw image if available
+            if (data.img) {
+                ctx.drawImage(data.img, 0, 0);
+            }
+            
+            // Draw bounding boxes if available
+            if (data.bbox) {
+                for (let i = 0; i < data.bbox.length; i++) {
+                    const box = data.bbox[i];
+                    const [xmin, ymin, xmax, ymax] = box;
+                    const width = xmax - xmin;
+                    const height = ymax - ymin;
+
+                    // draw bbox
+                    ctx.strokeStyle = '#00ff00';
+                    ctx.fillStyle = '#00ff00';
+                    ctx.strokeRect(xmin, ymin, width, height);
+                    ctx.fillText(`${data.label_names[i]} (score: ${data.scores[i].toFixed(2)})`, xmin + 5, ymin + 20);
+
+                    switch (mode) {
+                        case "delete":
+                            if (clickPos === null) break;
+                            if (clickPos.x > xmin && clickPos.x < xmax &&
+                                clickPos.y > ymin && clickPos.y < ymax) {
+                                    data.bbox.splice(i, 1);
+                                    data.label_names.splice(i, 1);
+                                    data.scores.splice(i, 1);
+                                }
+                            break;
+                    
+                        case "add":  
+                            // click to start drawing box
+                            if (clickPos && beginAdd === null) {
+                                beginAdd = clickPos;
+                                console.log('Started drawing box at:', beginAdd);
+                                nClicks = 1; // start tracking clicks for box creation
+                            }
+
+                            // Draw preview rectangle while dragging
+                            if (beginAdd){
+                                const startX = Math.min(beginAdd.x, mousePos.x);
+                                const startY = Math.min(beginAdd.y, mousePos.y);
+                                const endX = Math.max(beginAdd.x, mousePos.x);
+                                const endY = Math.max(beginAdd.y, mousePos.y);
+                                
+                                ctx.strokeStyle = "rgb(255, 255, 255)";
+                                ctx.strokeRect(startX, startY, endX - startX, endY - startY);
+                            }
+
+                            // clicked again when drawing is complete
+                            if (beginAdd && nClicks > 1){
+                                nClicks = 0; // reset click counter
+                                // Add the box to the data when mouse is released
+                                const xmin = Math.min(beginAdd.x, clickPos.x);
+                                const ymin = Math.min(beginAdd.y, clickPos.y);
+                                const xmax = Math.max(beginAdd.x, clickPos.x);
+                                const ymax = Math.max(beginAdd.y, clickPos.y);
+                                
+                                data.bbox.push([xmin, ymin, xmax, ymax]);
+
+                                let lbl = await promptLabel("enter the name of the label", "label name");
+                                data.label_names.push(lbl);
+                                data.scores.push(0.9);
+
+                                beginAdd = null;
+                                clickPos = null;
+                                console.log('Added box:', [xmin, ymin, xmax, ymax]);
+                            }
+                            break;
+
+                        case "edit":
+                            if (clickPos === null) break;
+                            if (clickPos.x > xmin && clickPos.x < xmax &&
+                                clickPos.y > ymin && clickPos.y < ymax) {
+                                clickPos = null;
+                                let lbl = await promptLabel("enter the name of the label", data.label_names[i]);
+                                data.label_names[i] = lbl;
+                                data.scores[i] = 1.0;
+                            }
+                            break;
+
+                        default:
+                            break;
+                    }
+
+                }
+            }
+
+            requestAnimationFrame(render);
+        }
+
+        async function loadImage(index) {
+            try {
+                // Fetch data from API
+                const response = await fetch(`/image/${index}`);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                data = await response.json();                
+                data.index = index;
+                
+                // Load image from base64
+                const img = new Image();
+                img.onload = function() {
+                    data.img = img;
+                    render();
+                };
+                
+                img.onerror = function() {
+                    errorDiv.textContent = 'Failed to load image';
+                    infoDiv.textContent = '';
+                };
+                
+                img.src = `data:image/png;base64,${data.image}`;
+
+                data.img = img;
+
+                render();
+                
+            } catch (error) {
+                errorDiv.textContent = `Error: ${error.message}`;
+                infoDiv.textContent = '';
+                console.error('Error loading image:', error);
+            }
+        }
+        
+        // Load first image on page load
+        window.onload = () => loadImage(0);
+
+        document.addEventListener('keypress', (e) => {
+            if (e.key == 'n') {
+                loadImage(data.index + 1);
+            }   
+            if (e.key == 'b') {
+                loadImage(data.index - 1);
+            }
+        });
+        
+        // Allow Enter key to load image
+        document.getElementById('indexInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                const newIndex = parseInt(document.getElementById('indexInput').value);
+                if (!isNaN(newIndex)) {
+                    loadImage(newIndex);
+                }
+            }
+        });
+    </script>
+</body>
+</html>

@@ -5,7 +5,8 @@ from torchvision.io import decode_image
 from torchvision import transforms
 from torchvision.models.detection import fasterrcnn_resnet50_fpn, FasterRCNN_ResNet50_FPN_Weights
 from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse
+import base64
 import torch
 import os
 
@@ -64,9 +65,13 @@ class ChessDataset(Dataset):
 dataset = ChessDataset("./data")
 app = FastAPI()
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    return {"message": "Hello World"}
+    try:
+        with open("index.html", "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "<h1>index.html not found</h1>"
 
 @app.get("/image/{index}")
 async def get_image(index: int):
@@ -78,21 +83,19 @@ async def get_image(index: int):
     # add label names with scores
     labels_names = [f"{dataset.auto_labeler.get_class_name(int(x[1]))}:{label['scores'][x[0]].item():.2f}" for x in enumerate(label['labels'])]
 
-    labeled_img = draw_bounding_boxes(img, label['boxes'], 
-                                      labels=labels_names,
-                                      colors=['red'] * len(label['labels']), 
-                                      width=2)
-
-
     # Convert to numpy and ensure correct data type for PIL
-    img_array = labeled_img.permute(1, 2, 0).numpy()
+    img_array = img.permute(1, 2, 0).detach().cpu().numpy()
     img_array = (img_array * 255).astype(np.uint8)
-    pil_img = Image.fromarray(img_array)
-    buf = io.BytesIO()
-    pil_img.save(buf, format='PNG')
-    buf.seek(0)
 
-    return StreamingResponse(buf, media_type="image/png")
+    buf = io.BytesIO()
+    Image.fromarray(img_array).save(buf, format='PNG')
+    img_b64 = base64.b64encode(buf.getvalue())
+
+    return {"image": img_b64.decode(), 
+            "bbox": label['boxes'].tolist(),
+            "labels": label['labels'].tolist(),
+            "label_names": labels_names,
+            "scores": label['scores'].tolist()}
 
 if __name__ == "__main__":
     import uvicorn
